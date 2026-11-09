@@ -199,16 +199,17 @@ jobs:
 
       - name: Prepare public summary
         if: always()
-        working-directory: pNiquitao
         env:
           LAB_ORIGIN: ${{ secrets.E2E_BASE_URL }}
           OBS_ORIGIN: ${{ secrets.E2E_OBS_LOGS_URL }}
           GLITCHTIP_ORIGIN: ${{ secrets.E2E_GLITCHTIP_URL }}
         run: |
-          mkdir -p public-summary
-          report="$(ls -1dt e2e/corridas/nightly-*.md 2>/dev/null | head -1 || true)"
+          # No working-directory here: it would fail before the script runs when the
+          # checkout itself failed (for example a missing or expired PAT).
+          mkdir -p pNiquitao/public-summary
+          report="$(ls -1dt pNiquitao/e2e/corridas/nightly-*.md 2>/dev/null | head -1 || true)"
           if [ -n "$report" ] && [ -f "$report" ]; then
-            python3 - "$report" public-summary/nightly.md <<'PY'
+            python3 - "$report" pNiquitao/public-summary/nightly.md <<'PY'
           import os
           import sys
 
@@ -224,10 +225,10 @@ jobs:
                   text = text.replace(value, token)
           open(target, "w", encoding="utf-8").write(text)
           PY
-            cat public-summary/nightly.md >> "$GITHUB_STEP_SUMMARY"
+            cat pNiquitao/public-summary/nightly.md >> "$GITHUB_STEP_SUMMARY"
             printf '\n' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No nightly summary was produced for this run." > public-summary/nightly.md
+            echo "No nightly summary was produced for this run." > pNiquitao/public-summary/nightly.md
           fi
 
       - name: Upload sanitized summary
