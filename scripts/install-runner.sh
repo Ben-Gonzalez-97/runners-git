@@ -24,7 +24,8 @@ Do not run this installer as root: the runner would execute job code and secrets
 Create a dedicated user and run it there:
 
   sudo adduser --disabled-password --gecos "" runner
-  sudo usermod -aG sudo runner
+  echo "runner ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-actions-runner
+  sudo chmod 440 /etc/sudoers.d/90-actions-runner
   sudo -iu runner
   # then clone this repo and re-run the installer as `runner`
 EOF

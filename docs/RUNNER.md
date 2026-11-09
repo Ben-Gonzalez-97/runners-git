@@ -34,12 +34,17 @@ with root privileges. Create a dedicated user:
 
 ```bash
 sudo adduser --disabled-password --gecos "" runner
-sudo usermod -aG sudo runner
+echo "runner ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-actions-runner
+sudo chmod 440 /etc/sudoers.d/90-actions-runner
 sudo -iu runner
 ```
 
 Run the installer as that user. `sudo` is only needed to install the systemd unit and,
 if you use `--with-deps`, the Playwright packages.
+
+> `NOPASSWD:ALL` is acceptable only because this host is dedicated to the runner and
+> executes trusted `pNiquitao` code. If you prefer a password, run `sudo passwd runner`
+> instead of the sudoers file and keep the `sudo` group membership.
 
 ## 2. Registration token
 
