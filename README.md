@@ -1,37 +1,42 @@
 # runners-git
 
-Self-hosted GitHub Actions workflows for heavy Playwright E2E runs against the private
-[`pNiquitao`](https://github.com/Ben-Gonzalez-97/pNiquitao) repository and its lab
-environment.
+Runs the heavy Playwright E2E suite of the private
+[`pNiquitao`](https://github.com/Ben-Gonzalez-97/pNiquitao) repository on **GitHub-hosted
+runners** and reports the result against its lab environment.
 
-The repository is public on purpose: it hosts the workflow and its runbook without
-exposing the private application code. The runner only executes trusted `pNiquitao`
-code selected by a repository writer (the schedule always runs `main`); it never
-executes code from forks.
+This repository is public on purpose:
+
+- public repositories get free standard GitHub-hosted runner minutes, which works around
+  the exhausted Actions minutes on the private repository;
+- the workflow and its documentation stay public without exposing the private code;
+- the runner is ephemeral and never executes code from forks.
 
 ## Architecture
 
 ```text
-GitHub (public repo)                  Self-hosted runner (Linux, label `lab`)
-+-------------------------+           +--------------------------------------------+
-| runners-git             |           | 1. checkout pNiquitao (read-only PAT)      |
-|  .github/workflows/     |   job     | 2. pnpm install + Playwright Chromium      |
-|    e2e-heavy.yml  ------+---------->| 3. bash e2e/scripts/nightly.sh run         |
-|    runner-smoke.yml     |           | 4. publish summary + upload artifacts      |
-+-------------------------+           +----------------------+---------------------+
-                                                             | HTTPS
-                                                             v
-                                                    Niquitao lab environment
+GitHub (public repo)                 GitHub-hosted runner (ubuntu-latest, ephemeral)
++-------------------------+          +---------------------------------------------+
+| runners-git             |          | 1. sparse checkout of pNiquitao/e2e (PAT)  |
+|  .github/workflows/     |   job    | 2. pnpm install + Playwright Chromium       |
+|    e2e-heavy.yml  ------+--------->| 3. bash e2e/scripts/nightly.sh run          |
++-------------------------+          | 4. sanitized summary + artifact             |
+                                     +----------------------+----------------------+
+                                                            | HTTPS
+                                                            v
+                                                   Niquitao lab environment
 ```
 
-## Workflows
+The checkout uses `sparse-checkout: e2e`: only the `e2e/` working tree is materialized.
+Full git history is still fetched because `nightly.sh` needs `origin/main`, product-path
+diffs and `git archive origin/main e2e`.
+
+## Workflow
 
 | Workflow | Trigger | What it runs |
 |----------|---------|--------------|
 | `E2E heavy (pNiquitao lab)` | `schedule` (01:06 UTC = 21:06 VET) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: wake, deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
-| `Runner smoke` | `workflow_dispatch` | Runner sanity check (`uname`, tools) and lab `/api/health` |
 
-`E2E heavy` inputs:
+Inputs:
 
 | Input | Default | Meaning |
 |-------|---------|---------|
@@ -60,26 +65,6 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 
 \* Required by `nightly.sh run` when the lab is asleep.
 
-## Runner setup
-
-Full runbook: [`docs/RUNNER.md`](docs/RUNNER.md). Short version on a fresh Linux host:
-
-```bash
-# Create a dedicated non-root user; the installer refuses to run as root.
-sudo adduser --disabled-password --gecos "" runner
-echo "runner ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-actions-runner
-sudo chmod 440 /etc/sudoers.d/90-actions-runner
-sudo -iu runner
-
-# As `runner` (generate the token first, see docs/RUNNER.md section 2):
-git clone https://github.com/Ben-Gonzalez-97/runners-git.git
-cd runners-git
-RUNNER_TOKEN="<registration-token>" INSTALL_DEPS=1 ./scripts/install-runner.sh
-```
-
-The runner must carry the custom label `lab`. Both workflows select
-`[self-hosted, linux, lab]`.
-
 ## Trigger a run
 
 ```bash
@@ -87,6 +72,20 @@ gh workflow run e2e-heavy.yml -f suite=nightly
 gh workflow run e2e-heavy.yml -f suite=smoke
 gh run watch
 ```
+
+## Known limits
+
+- **6-hour job cap.** GitHub-hosted jobs are hard-capped at 6 hours. `nightly.sh` runs
+  functional (up to 3 surfaces) plus stress (up to 3 surfaces), so the worst case can
+  exceed the cap. If the nightly is cancelled at 6 hours, run `suite: functional` and
+  `suite: stress` as two separate manual runs (or split the schedule).
+- **Lab reachability.** GitHub-hosted runners use dynamic public IPs. If the lab or its
+  wake Lambda has an IP allowlist, the run will fail; `suite: smoke` is the fastest way
+  to check.
+- **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
+  otherwise it waits 30 minutes and exits `FAILED-INFRA`.
+- **Scheduled workflows** are disabled after 60 days without repository activity.
+- **Concurrency.** The `e2e-lab` group prevents overlapping runs from this repository.
 
 ## Artifacts and public visibility
 
@@ -97,27 +96,14 @@ therefore:
 - never uploads `test-results/`, Playwright traces, videos, or `nightly.log`, because a
   failed login trace can contain the typed lab password.
 
-Raw artifacts stay on the runner under `actions-runner/_work/.../e2e/artifacts` for
-on-host debugging. If you need them remotely, copy them to private storage; do not
-publish them as public artifacts.
-
 ## Security
 
-- There is no `pull_request` or `pull_request_target` trigger: fork code never runs on
-  the runner.
+- There is no `pull_request` or `pull_request_target` trigger: fork code never runs with
+  secrets.
 - `PNIQUITAO_TOKEN` should be a fine-grained PAT limited to `pNiquitao` with
   **Contents: read** only.
 - In **Settings -> Actions -> General -> Fork pull request workflows**, require approval
   for all outside collaborators.
-- Keep the runner dedicated to this repository; do not register it at organization level.
 - Never print secret values in workflow steps.
 - Never upload Playwright traces or `test-results/` from this public repository: traces
   can contain values typed into login forms.
-
-## Notes
-
-- Scheduled workflows are disabled after 60 days without repository activity.
-- The runner is a long-lived host: monitor disk usage, because Playwright traces, videos
-  and E2E artifacts accumulate under `actions-runner/_work`.
-- `nightly.sh` keeps its own run lock; the workflow also uses a `concurrency` group so a
-  manual run cannot overlap or cancel an in-flight nightly.
