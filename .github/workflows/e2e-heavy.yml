@@ -1,0 +1,161 @@
+name: E2E heavy (pNiquitao lab)
+
+on:
+  schedule:
+    # 01:06 UTC = 21:06 America/Caracas (UTC-4), matching pNiquitao's nightly routine.
+    - cron: "6 1 * * *"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Suite to run"
+        type: choice
+        default: nightly
+        options:
+          - nightly
+          - functional
+          - stress
+          - all-surfaces
+          - smoke
+      ref:
+        description: "pNiquitao git ref (branch, tag or SHA)"
+        type: string
+        default: main
+      force:
+        description: "nightly only: skip the product-merge gate"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # One heavy run at a time on the lab; a manual run must not cancel an in-flight nightly.
+  group: e2e-lab
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: ${{ inputs.suite || 'nightly' }} · pNiquitao@${{ inputs.ref || 'main' }}
+    # The runner must be registered with the custom label `lab` (see docs/RUNNER.md).
+    runs-on: [self-hosted, linux, lab]
+    timeout-minutes: 480
+    env:
+      CI: "true"
+      NIQUITAO_GIT: ${{ github.workspace }}/pNiquitao
+      LAB_URL: ${{ secrets.E2E_BASE_URL }}
+      E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+      E2E_USER_GERENTE: ${{ secrets.E2E_USER_GERENTE }}
+      E2E_PASSWORD_GERENTE: ${{ secrets.E2E_PASSWORD_GERENTE }}
+      E2E_USER_OPERADOR: ${{ secrets.E2E_USER_OPERADOR }}
+      E2E_PASSWORD_OPERADOR: ${{ secrets.E2E_PASSWORD_OPERADOR }}
+      E2E_OBS_LOGS_URL: ${{ secrets.E2E_OBS_LOGS_URL }}
+      E2E_OBS_USER: ${{ secrets.E2E_OBS_USER }}
+      E2E_OBS_PASSWORD: ${{ secrets.E2E_OBS_PASSWORD }}
+      E2E_GLITCHTIP_URL: ${{ secrets.E2E_GLITCHTIP_URL }}
+      E2E_GLITCHTIP_EMAIL: ${{ secrets.E2E_GLITCHTIP_EMAIL }}
+      E2E_GLITCHTIP_PASSWORD: ${{ secrets.E2E_GLITCHTIP_PASSWORD }}
+      E2E_CREDENTIALS_FILE: ${{ secrets.E2E_CREDENTIALS_FILE }}
+      LAB_WAKE_URL: ${{ secrets.LAB_WAKE_URL }}
+      LAB_WAKE_TOKEN: ${{ secrets.LAB_WAKE_TOKEN }}
+      E2E_FX_COMMISSION: "1"
+    steps:
+      - name: Checkout pNiquitao
+        uses: actions/checkout@v4
+        with:
+          repository: Ben-Gonzalez-97/pNiquitao
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.PNIQUITAO_TOKEN }}
+          path: pNiquitao
+          fetch-depth: 0
+
+      - name: Runner info
+        run: |
+          uname -a
+          git --version
+          rsync --version | head -1
+          python3 --version
+          df -h .
+
+      - name: Check required secrets
+        run: |
+          missing=0
+          for v in E2E_BASE_URL E2E_USER_GERENTE E2E_PASSWORD_GERENTE; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret: $v"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pNiquitao/e2e/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: pNiquitao/e2e
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        working-directory: pNiquitao/e2e
+        # --with-deps uses sudo; the runner user needs passwordless sudo or the host
+        # must already have the Playwright dependencies installed.
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run suite
+        working-directory: pNiquitao
+        run: |
+          suite="${{ inputs.suite || 'nightly' }}"
+          echo "suite=${suite} ref=${{ inputs.ref || 'main' }}"
+          case "$suite" in
+            nightly)
+              if [ "${{ inputs.force }}" = "true" ]; then
+                bash e2e/scripts/nightly.sh run --force
+              else
+                bash e2e/scripts/nightly.sh run
+              fi
+              ;;
+            functional)  pnpm --dir e2e run test:functional ;;
+            stress)      pnpm --dir e2e run test:stress ;;
+            all-surfaces) pnpm --dir e2e run test:all-surfaces ;;
+            smoke)       pnpm --dir e2e run test:smoke ;;
+            *)
+              echo "::error::Unknown suite: ${suite}"
+              exit 64
+              ;;
+          esac
+
+      - name: Publish summary
+        if: always()
+        working-directory: pNiquitao
+        run: |
+          report="$(ls -1dt e2e/corridas/nightly-*.md 2>/dev/null | head -1 || true)"
+          summary="$(ls -1dt e2e/artifacts/nightly-*/summary.md 2>/dev/null | head -1 || true)"
+          for f in "$report" "$summary"; do
+            if [ -n "$f" ] && [ -f "$f" ]; then
+              cat "$f" >> "$GITHUB_STEP_SUMMARY"
+              printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ inputs.suite || 'nightly' }}-${{ github.run_id }}
+          path: |
+            pNiquitao/e2e/artifacts/nightly-*/
+            pNiquitao/e2e/corridas/nightly-*.md
+            pNiquitao/e2e/test-results/
+            pNiquitao/e2e/test-results-*/
+            pNiquitao/e2e/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

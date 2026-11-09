@@ -1,0 +1,35 @@
+name: Runner smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Runner + lab reachability
+    runs-on: [self-hosted, linux, lab]
+    timeout-minutes: 10
+    steps:
+      - name: Runner details
+        run: |
+          uname -a
+          echo "runner=${RUNNER_NAME} os=${RUNNER_OS} arch=${RUNNER_ARCH}"
+          git --version
+          rsync --version | head -1
+          python3 --version
+          curl --version | head -1
+          node --version || echo "node not installed on host (workflow installs it per run)"
+          pnpm --version || echo "pnpm not installed on host (workflow installs it per run)"
+
+      - name: Lab health
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+        run: |
+          test -n "$E2E_BASE_URL" || {
+            echo "::error::E2E_BASE_URL secret is missing"
+            exit 1
+          }
+          curl -fsS -m 20 "$E2E_BASE_URL/api/health"
+          echo
