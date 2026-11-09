@@ -16,10 +16,12 @@ This repository is public on purpose:
 ```text
 GitHub (public repo)                 GitHub-hosted runner (ubuntu-latest, ephemeral)
 +-------------------------+          +---------------------------------------------+
-| runners-git             |          | 1. sparse checkout of pNiquitao/e2e (PAT)  |
-|  .github/workflows/     |   job    | 2. pnpm install + Playwright Chromium       |
-|    e2e-heavy.yml  ------+--------->| 3. bash e2e/scripts/nightly.sh run          |
-+-------------------------+          | 4. sanitized summary + artifact             |
+| runners-git             |          | gate: read latest pNiquitao/main SHA (PAT)   |
+|  .github/workflows/     |   job    |       skip if that SHA is already tested    |
+|    e2e-heavy.yml  ------+--------->| e2e: 1. sparse checkout of pNiquitao/e2e     |
++-------------------------+          |      2. pnpm install + Playwright Chromium  |
+                                     |      3. bash e2e/scripts/nightly.sh run     |
+                                     |      4. sanitized summary + artifact        |
                                      +----------------------+----------------------+
                                                             | HTTPS
                                                             v
@@ -34,13 +36,13 @@ diffs and `git archive origin/main e2e`.
 
 | Workflow | Trigger | What it runs |
 |----------|---------|--------------|
-| `E2E heavy (pNiquitao lab)` | `schedule` (01:06 UTC = 21:06 VET) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
+| `E2E heavy (pNiquitao lab)` | `schedule` every 15 min (gate checks `pNiquitao/main`) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
 
 Inputs:
 
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `suite` | `nightly` | `nightly`, `functional`, `stress`, `all-surfaces` or `smoke` |
+| `suite` | `nightly` | `nightly`, `functional`, `stress`, `all-surfaces` or `smoke`; manual dispatch always bypasses the gate |
 | `ref` | `main` | `pNiquitao` ref to test; `nightly` always tests `main` and rejects other refs |
 | `force` | `false` | `nightly` only: skip the product-merge gate |
 
@@ -73,18 +75,39 @@ gh workflow run e2e-heavy.yml -f suite=smoke
 gh run watch
 ```
 
+## Run on new merges
+
+GitHub cannot trigger a workflow in this repository from a push in another repository.
+A sender workflow in `pNiquitao` would need its own Actions minutes, which are exhausted.
+Instead, this workflow polls every 15 minutes:
+
+1. The `gate` job reads the latest `pNiquitao/main` SHA with the read-only PAT.
+2. It looks up the Actions cache key `pni-tested-<sha>`.
+3. If the key exists, the heavy job is skipped.
+4. If it does not exist, the heavy job runs and, after the suite, saves the marker.
+
+Each `pNiquitao/main` SHA is tested at most once automatically. A failed suite (exit
+`1`) is also marked as processed to avoid retrying every 15 minutes; use
+`workflow_dispatch` to retry it manually. A `FAILED-INFRA` result (exit `2`: lab down or
+deploy behind `main`) is **not** marked, so the next poll retries until the deploy
+catches up. Merge-to-result latency is up to ~15 minutes plus the ~1:10 suite.
+
+If you later want exact push-triggered runs, add a `repository_dispatch` sender in
+`pNiquitao`; that small workflow consumes private Actions minutes, so it is not used here.
+
 ## Known limits
 
-- **6-hour job cap.** GitHub-hosted jobs are hard-capped at 6 hours. `nightly.sh` runs
-  functional (up to 3 surfaces) plus stress (up to 3 surfaces), so the worst case can
-  exceed the cap. If the nightly is cancelled at 6 hours, run `suite: functional` and
-  `suite: stress` as two separate manual runs (or split the schedule).
+- **6-hour job cap.** GitHub-hosted jobs are hard-capped at 6 hours. The suite takes
+  about 1:10, so it fits comfortably; if it ever grows, run `suite: functional` and
+  `suite: stress` as two separate manual runs.
 - **Lab reachability.** GitHub-hosted runners use dynamic public IPs. If the lab has an
   IP allowlist, the run will fail; `suite: smoke` is the fastest way to check.
 - **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
   otherwise it waits 30 minutes and exits `FAILED-INFRA`.
 - **Scheduled workflows** are disabled after 60 days without repository activity.
-- **Concurrency.** The `e2e-lab` group prevents overlapping runs from this repository.
+- **Concurrency.** The `e2e-lab` group serializes only the heavy job, so a 15-minute gate
+  poll is never blocked behind an in-flight run. GitHub keeps at most one pending run per
+  group; newer polls replace the pending one.
 
 ## Artifacts and public visibility
 
@@ -100,7 +123,8 @@ therefore:
 - There is no `pull_request` or `pull_request_target` trigger: fork code never runs with
   secrets.
 - `PNIQUITAO_TOKEN` should be a fine-grained PAT limited to `pNiquitao` with
-  **Contents: read** only.
+  **Contents: read** only. Fine-grained PATs expire (one year maximum): rotate it before
+  it expires, otherwise the `gate` job fails and no scheduled run starts.
 - In **Settings -> Actions -> General -> Fork pull request workflows**, require approval
   for all outside collaborators.
 - Never print secret values in workflow steps.

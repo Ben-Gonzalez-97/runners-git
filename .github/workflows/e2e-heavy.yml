@@ -2,12 +2,13 @@ name: E2E heavy (pNiquitao lab)
 
 on:
   schedule:
-    # 01:06 UTC = 21:06 America/Caracas (UTC-4), matching pNiquitao's nightly routine.
-    - cron: "6 1 * * *"
+    # Poll every 15 minutes. The `gate` job runs the heavy suite only when
+    # pNiquitao/main has a commit that has not been tested yet.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       suite:
-        description: "Suite to run"
+        description: "Suite to run (manual dispatch always bypasses the gate)"
         type: choice
         default: nightly
         options:
@@ -28,18 +29,60 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # One heavy run at a time against the lab.
-  group: e2e-lab
-  cancel-in-progress: false
-
 jobs:
+  gate:
+    name: Check for a new pNiquitao main commit
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      sha: ${{ steps.latest.outputs.sha }}
+    steps:
+      - name: Latest pNiquitao main
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.PNIQUITAO_TOKEN }}
+        run: |
+          sha="$(gh api repos/Ben-Gonzalez-97/pNiquitao/commits/main --jq .sha)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "latest main: ${sha}"
+
+      - name: Restore tested marker
+        id: marker
+        uses: actions/cache/restore@v6
+        with:
+          path: .tested-sha
+          key: pni-tested-${{ steps.latest.outputs.sha }}
+          lookup-only: true
+
+      - name: Decide
+        id: decide
+        env:
+          CACHE_HIT: ${{ steps.marker.outputs.cache-hit }}
+          SHA: ${{ steps.latest.outputs.sha }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Already tested: ${SHA}"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "New commit: ${SHA}"
+          fi
+
   e2e:
     name: ${{ inputs.suite || 'nightly' }} · pNiquitao@${{ inputs.ref || 'main' }}
+    needs: gate
+    # Manual dispatch always runs; scheduled runs only run when the gate says the
+    # current pNiquitao/main SHA has not been tested yet.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.run == 'true')
+    # Serialize the heavy job only, so 15-minute gate polls are never blocked behind a run.
+    concurrency:
+      group: e2e-lab
+      cancel-in-progress: false
     # GitHub-hosted runner. Public repositories get free standard runner minutes.
     runs-on: ubuntu-latest
-    # GitHub-hosted jobs are hard-capped at 6 hours. nightly.sh may need more in the
-    # worst case; see README "Known limits" for the split-suite fallback.
+    # The suite takes about 1:10 in practice; 6 hours is the GitHub-hosted hard cap.
     timeout-minutes: 360
     env:
       CI: "true"
@@ -113,6 +156,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Run suite
+        id: suite
         working-directory: pNiquitao
         env:
           SUITE: ${{ inputs.suite || 'nightly' }}
@@ -120,27 +164,32 @@ jobs:
           PN_REF: ${{ inputs.ref || 'main' }}
         run: |
           echo "suite=${SUITE} ref=${PN_REF}"
+          code=0
           if [ "$SUITE" = "nightly" ] && [ "$PN_REF" != "main" ]; then
             echo "::error::suite=nightly always tests pNiquitao main; use functional, stress, all-surfaces or smoke for another ref"
-            exit 64
+            code=64
+          else
+            case "$SUITE" in
+              nightly)
+                if [ "$FORCE" = "true" ]; then
+                  bash e2e/scripts/nightly.sh run --force || code=$?
+                else
+                  bash e2e/scripts/nightly.sh run || code=$?
+                fi
+                ;;
+              functional)   pnpm --dir e2e run test:functional || code=$? ;;
+              stress)       pnpm --dir e2e run test:stress || code=$? ;;
+              all-surfaces) pnpm --dir e2e run test:all-surfaces || code=$? ;;
+              smoke)        pnpm --dir e2e run test:smoke || code=$? ;;
+              *)
+                echo "::error::Unknown suite: ${SUITE}"
+                code=64
+                ;;
+            esac
           fi
-          case "$SUITE" in
-            nightly)
-              if [ "$FORCE" = "true" ]; then
-                bash e2e/scripts/nightly.sh run --force
-              else
-                bash e2e/scripts/nightly.sh run
-              fi
-              ;;
-            functional)   pnpm --dir e2e run test:functional ;;
-            stress)       pnpm --dir e2e run test:stress ;;
-            all-surfaces) pnpm --dir e2e run test:all-surfaces ;;
-            smoke)        pnpm --dir e2e run test:smoke ;;
-            *)
-              echo "::error::Unknown suite: ${SUITE}"
-              exit 64
-              ;;
-          esac
+          echo "exit=${code}" >> "$GITHUB_OUTPUT"
+          # nightly.sh: 0 approved/skipped, 1 failed, 2 FAILED-INFRA (lab not ready).
+          exit "$code"
 
       - name: Remove checkout credentials
         if: always()
@@ -191,3 +240,19 @@ jobs:
           path: pNiquitao/public-summary/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Mark pNiquitao SHA as processed
+        # exit=2 means FAILED-INFRA (lab not ready or deploy behind main): leave the SHA
+        # unmarked so the next poll retries once the deploy catches up.
+        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && steps.suite.outputs.exit != '2'
+        env:
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: printf '%s\n' "$SHA" > .tested-sha
+
+      - name: Save processed marker
+        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && steps.suite.outputs.exit != '2'
+        uses: actions/cache/save@v6
+        continue-on-error: true
+        with:
+          path: .tested-sha
+          key: pni-tested-${{ needs.gate.outputs.sha }}
