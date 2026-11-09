@@ -63,6 +63,7 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 | `E2E_OBS_LOGS_URL`, `E2E_OBS_USER`, `E2E_OBS_PASSWORD` | no | VictoriaLogs observability |
 | `E2E_GLITCHTIP_URL`, `E2E_GLITCHTIP_EMAIL`, `E2E_GLITCHTIP_PASSWORD` | no | GlitchTip observability |
 | `E2E_CREDENTIALS_FILE` | no | Role-matrix credentials file path on the runner |
+| `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | no | OpenSSH **public** key used by `age` to encrypt the raw artifacts (not sensitive) |
 
 The lab is expected to be always up; no wake Lambda is configured. If it is down,
 `nightly.sh` fails with `FAILED-INFRA` instead of waking it.
@@ -114,11 +115,34 @@ If you later want exact push-triggered runs, add a `repository_dispatch` sender 
 ## Artifacts and public visibility
 
 Workflow logs and step summaries in a public repository are public. The workflow
-therefore:
+therefore uploads two artifacts:
 
-- uploads only a sanitized nightly summary (lab and observability origins redacted);
-- never uploads `test-results/`, Playwright traces, videos, or `nightly.log`, because a
-  failed login trace can contain the typed lab password.
+| Artifact | Contents | Retention |
+|----------|----------|-----------|
+| `e2e-summary-<run_id>` | Nightly report with the lab, VictoriaLogs and GlitchTip origins replaced by `<lab>`, `<lab-obs>` and `<glitchtip>` | 14 days |
+| `e2e-raw-<run_id>` | `artifacts/`, `corridas/` and `test-results/` (logs, metrics, traces, videos, screenshots) packed and encrypted with `age` | 30 days |
+
+The raw bundle is encrypted to an OpenSSH public key (`E2E_ARTIFACTS_SSH_PUBLIC_KEY`);
+the private half never leaves the operator, so publishing the blob is safe even though a
+failed login trace can contain the typed lab password.
+
+Decrypt a run locally:
+
+```bash
+gh run download <run_id> --repo Ben-Gonzalez-97/runners-git -n e2e-raw-<run_id>
+age -d -i ~/.ssh/runners-git-e2e-artifacts -o e2e-artifacts.tar.gz e2e-artifacts-<run_id>.tar.gz.age
+tar -xzf e2e-artifacts.tar.gz
+```
+
+If the secret is not set, the workflow skips the raw bundle with a warning and still
+uploads the sanitized summary; a failure while encrypting never fails a green run.
+
+## Failure notifications
+
+GitHub emails the user who last edited the `cron` line when a scheduled workflow fails.
+Check **Settings -> Notifications -> Actions** and enable notifications for failed
+workflows. The email links to the run, whose summary and `e2e-raw-<run_id>` artifact are
+everything needed to debug the failure.
 
 ## Security
 
@@ -130,5 +154,5 @@ therefore:
 - In **Settings -> Actions -> General -> Fork pull request workflows**, require approval
   for all outside collaborators.
 - Never print secret values in workflow steps.
-- Never upload Playwright traces or `test-results/` from this public repository: traces
-  can contain values typed into login forms.
+- Raw Playwright traces and `test-results/` leave the runner only inside the `age`
+  bundle, never unencrypted: traces can contain values typed into login forms.

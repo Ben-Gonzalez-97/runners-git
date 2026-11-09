@@ -261,12 +261,64 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          # Never upload test-results/, traces, videos or nightly logs here: this
-          # repository is public and Playwright traces can contain typed passwords.
+          # Never upload test-results/, traces, videos or nightly logs in the clear here:
+          # this repository is public and Playwright traces can contain typed passwords.
           name: e2e-summary-${{ github.run_id }}
           path: pNiquitao/public-summary/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Encrypt raw artifacts
+        # A debugging aid must never turn a green nightly red: failures here are visible
+        # as a warning step but do not fail the job.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          ARTIFACT_PUBKEY: ${{ secrets.E2E_ARTIFACTS_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          src="pNiquitao/e2e"
+          if [ -z "${ARTIFACT_PUBKEY:-}" ]; then
+            echo "::warning::E2E_ARTIFACTS_SSH_PUBLIC_KEY is not set; skipping the encrypted artifact"
+            exit 0
+          fi
+
+          # nightly.sh writes artifacts/nightly-<date>/ (logs, metrics, test-results-*),
+          # corridas/nightly-*.md and, for the lighter suites, Playwright's test-results/.
+          paths=()
+          for d in artifacts corridas test-results; do
+            if [ -d "$src/$d" ]; then
+              paths+=("$d")
+            fi
+          done
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "No raw artifacts to encrypt."
+            exit 0
+          fi
+
+          printf '%s\n' "$ARTIFACT_PUBKEY" > "$RUNNER_TEMP/age-recipient.pub"
+          if ! command -v age >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq age
+          fi
+
+          mkdir -p encrypted-artifacts
+          out="encrypted-artifacts/e2e-artifacts-${GITHUB_RUN_ID}.tar.gz.age"
+          tar -czf - -C "$src" "${paths[@]}" \
+            | age -R "$RUNNER_TEMP/age-recipient.pub" -o "$out"
+          rm -f "$RUNNER_TEMP/age-recipient.pub"
+          ls -lh encrypted-artifacts
+
+      - name: Upload encrypted artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          # Encrypted to an SSH public key whose private half never leaves the operator.
+          name: e2e-raw-${{ github.run_id }}
+          path: encrypted-artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Mark pNiquitao SHA as processed
         # exit=2 means FAILED-INFRA (lab not ready or deploy behind main): leave the SHA
