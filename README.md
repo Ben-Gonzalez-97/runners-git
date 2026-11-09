@@ -6,7 +6,8 @@ environment.
 
 The repository is public on purpose: it hosts the workflow and its runbook without
 exposing the private application code. The runner only executes trusted `pNiquitao`
-code checked out from `main`; it never executes code from forks.
+code selected by a repository writer (the schedule always runs `main`); it never
+executes code from forks.
 
 ## Architecture
 
@@ -35,7 +36,7 @@ GitHub (public repo)                  Self-hosted runner (Linux, label `lab`)
 | Input | Default | Meaning |
 |-------|---------|---------|
 | `suite` | `nightly` | `nightly`, `functional`, `stress`, `all-surfaces` or `smoke` |
-| `ref` | `main` | `pNiquitao` ref to test |
+| `ref` | `main` | `pNiquitao` ref to test; `nightly` always tests `main` and rejects other refs |
 | `force` | `false` | `nightly` only: skip the product-merge gate |
 
 > `nightly.sh run` also waits for the lab deployment to match `main` (30 min by default)
@@ -64,11 +65,15 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 Full runbook: [`docs/RUNNER.md`](docs/RUNNER.md). Short version on a fresh Linux host:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y curl tar git rsync python3 jq
+# Create a dedicated non-root user; the installer refuses to run as root.
+sudo adduser --disabled-password --gecos "" runner
+sudo usermod -aG sudo runner
+sudo -iu runner
 
-RUNNER_TOKEN="$(gh api -X POST repos/Ben-Gonzalez-97/runners-git/actions/runners/registration-token --jq .token)" \
-  ./scripts/install-runner.sh
+# As `runner` (generate the token first, see docs/RUNNER.md section 2):
+git clone https://github.com/Ben-Gonzalez-97/runners-git.git
+cd runners-git
+RUNNER_TOKEN="<registration-token>" INSTALL_DEPS=1 ./scripts/install-runner.sh
 ```
 
 The runner must carry the custom label `lab`. Both workflows select
@@ -82,6 +87,19 @@ gh workflow run e2e-heavy.yml -f suite=smoke
 gh run watch
 ```
 
+## Artifacts and public visibility
+
+Workflow logs and step summaries in a public repository are public. The workflow
+therefore:
+
+- uploads only a sanitized nightly summary (lab and observability origins redacted);
+- never uploads `test-results/`, Playwright traces, videos, or `nightly.log`, because a
+  failed login trace can contain the typed lab password.
+
+Raw artifacts stay on the runner under `actions-runner/_work/.../e2e/artifacts` for
+on-host debugging. If you need them remotely, copy them to private storage; do not
+publish them as public artifacts.
+
 ## Security
 
 - There is no `pull_request` or `pull_request_target` trigger: fork code never runs on
@@ -92,6 +110,8 @@ gh run watch
   for all outside collaborators.
 - Keep the runner dedicated to this repository; do not register it at organization level.
 - Never print secret values in workflow steps.
+- Never upload Playwright traces or `test-results/` from this public repository: traces
+  can contain values typed into login forms.
 
 ## Notes
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install a GitHub Actions self-hosted runner for Ben-Gonzalez-97/runners-git on Linux.
 #
-# Usage:
+# Usage (as a dedicated non-root user):
 #   RUNNER_TOKEN=... ./scripts/install-runner.sh
 #
 # Environment:
@@ -16,6 +16,20 @@
 # Generate a registration token with:
 #   gh api -X POST repos/Ben-Gonzalez-97/runners-git/actions/runners/registration-token --jq .token
 set -euo pipefail
+umask 077
+
+if [[ "$(id -u)" -eq 0 ]]; then
+  cat >&2 <<'EOF'
+Do not run this installer as root: the runner would execute job code and secrets as root.
+Create a dedicated user and run it there:
+
+  sudo adduser --disabled-password --gecos "" runner
+  sudo usermod -aG sudo runner
+  sudo -iu runner
+  # then clone this repo and re-run the installer as `runner`
+EOF
+  exit 1
+fi
 
 RUNNER_URL="${RUNNER_URL:-https://github.com/Ben-Gonzalez-97/runners-git}"
 RUNNER_NAME="${RUNNER_NAME:-$(hostname)-lab}"
@@ -47,7 +61,7 @@ if [[ "${INSTALL_DEPS:-0}" == "1" ]]; then
   sudo apt-get install -y curl tar git rsync python3 jq
 fi
 
-for cmd in curl tar git; do
+for cmd in curl tar git rsync python3 jq; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "Missing required command: $cmd (re-run with INSTALL_DEPS=1 on Debian/Ubuntu)" >&2
     exit 1
@@ -55,10 +69,11 @@ for cmd in curl tar git; do
 done
 
 if [[ -z "${RUNNER_VERSION:-}" ]]; then
-  if command -v gh >/dev/null 2>&1; then
-    RUNNER_VERSION="$(gh api repos/actions/runner/releases/latest --jq '.tag_name' | sed 's/^v//')"
-  else
-    RUNNER_VERSION="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    RUNNER_VERSION="$(gh api repos/actions/runner/releases/latest --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
+  fi
+  if [[ -z "${RUNNER_VERSION:-}" ]]; then
+    RUNNER_VERSION="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/actions/runner/releases/latest \
       | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)"
   fi
 fi
@@ -74,7 +89,7 @@ cd "$RUNNER_DIR"
 
 tarball="actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz"
 if [[ ! -f "$tarball" ]]; then
-  curl -fL -o "$tarball" \
+  curl -fL --retry 3 --retry-delay 2 -o "$tarball" \
     "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${tarball}"
 fi
 tar xzf "$tarball"
@@ -87,7 +102,11 @@ tar xzf "$tarball"
   --unattended \
   --replace
 
-# Install and start the systemd service as the current user.
+# Re-running the installer must not fail on an existing systemd unit.
+if compgen -G "/etc/systemd/system/actions.runner.*.service" >/dev/null; then
+  echo "Existing Actions runner service detected; reinstalling the unit"
+  sudo ./svc.sh uninstall || true
+fi
 sudo ./svc.sh install "$(id -un)"
 sudo ./svc.sh start
 

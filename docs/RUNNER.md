@@ -27,6 +27,20 @@ sudo apt-get install -y curl tar git rsync python3 jq
 Node and pnpm are installed per run by the workflow (`actions/setup-node` and
 `pnpm/action-setup`); a system Node is optional.
 
+### Dedicated non-root user
+
+Do not run the runner as root: every job, secret and checked-out script would execute
+with root privileges. Create a dedicated user:
+
+```bash
+sudo adduser --disabled-password --gecos "" runner
+sudo usermod -aG sudo runner
+sudo -iu runner
+```
+
+Run the installer as that user. `sudo` is only needed to install the systemd unit and,
+if you use `--with-deps`, the Playwright packages.
+
 ## 2. Registration token
 
 UI: **Settings -> Actions -> Runners -> New self-hosted runner**, then copy the token.
@@ -41,6 +55,8 @@ The token expires after about one hour. Do not commit it or paste it into issues
 
 ## 3. Install
 
+As the dedicated `runner` user:
+
 ```bash
 git clone https://github.com/Ben-Gonzalez-97/runners-git.git
 cd runners-git
@@ -52,8 +68,9 @@ INSTALL_DEPS=1 \
 ./scripts/install-runner.sh
 ```
 
-The script downloads the latest runner release for the host architecture, configures it
-with the `lab` label, and installs/starts the systemd service as the invoking user.
+The installer refuses to run as root, downloads the latest runner release for the host
+architecture, configures it with the `lab` label, and installs/starts the systemd
+service as the invoking user.
 
 Manual fallback:
 
@@ -90,6 +107,7 @@ Configure these in the repository (never on the runner host, except an optional
 | `E2E_OBS_LOGS_URL`, `E2E_OBS_USER`, `E2E_OBS_PASSWORD` | no | VictoriaLogs |
 | `E2E_GLITCHTIP_URL`, `E2E_GLITCHTIP_EMAIL`, `E2E_GLITCHTIP_PASSWORD` | no | GlitchTip |
 | `LAB_WAKE_URL`, `LAB_WAKE_TOKEN` | no* | Wake Lambda |
+| `E2E_CREDENTIALS_FILE` | no | Role-matrix credentials file path on the runner |
 
 \* Required by `nightly.sh run` when the lab is asleep.
 
@@ -105,9 +123,11 @@ tail -f ~/actions-runner/_diag/Runner_*.log
 - The runner auto-updates itself.
 - Clean old work only while no job is running:
   `rm -rf ~/actions-runner/_work/_temp/*`.
-- If a job fails with `sudo: a password is required`, grant passwordless sudo to the
-  runner user for `playwright install --with-deps`, or preinstall the dependencies with
-  `sudo pnpm exec playwright install-deps chromium` once.
+- If a job fails with `sudo: a password is required`, grant the runner user passwordless
+  sudo for `apt-get` (used by `playwright install --with-deps`), or preinstall the
+  Playwright dependencies once as root with the same Playwright version. For example,
+  with Node/npm available on the host:
+  `cd /tmp && sudo npx --yes playwright@1.55.1 install-deps chromium`.
 - If the lab is asleep, `nightly.sh` calls `LAB_WAKE_URL`; without those secrets it exits
   `FAILED-INFRA`.
 
@@ -119,4 +139,8 @@ tail -f ~/actions-runner/_diag/Runner_*.log
 - Require approval for outside collaborators in **Settings -> Actions -> General**.
 - `PNIQUITAO_TOKEN` must be read-only and scoped to `pNiquitao`.
 - The checkout persists the token in the job workspace so `nightly.sh` can run
-  `git fetch`; the checkout post-step removes it. Do not run untrusted code on this host.
+  `git fetch`; the workflow explicitly removes it in an `always()` step, and the checkout
+  post-step removes it as well. Do not run untrusted code on this host.
+- This public repository makes workflow logs, step summaries and artifacts public. The
+  workflow uploads only a sanitized summary; raw `test-results/`, traces and
+  `nightly.log` stay on the runner because traces can contain typed passwords.

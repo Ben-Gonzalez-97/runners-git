@@ -17,7 +17,7 @@ on:
           - all-surfaces
           - smoke
       ref:
-        description: "pNiquitao git ref (branch, tag or SHA)"
+        description: "pNiquitao git ref (branch, tag or SHA). nightly always tests main."
         type: string
         default: main
       force:
@@ -38,7 +38,7 @@ jobs:
     name: ${{ inputs.suite || 'nightly' }} · pNiquitao@${{ inputs.ref || 'main' }}
     # The runner must be registered with the custom label `lab` (see docs/RUNNER.md).
     runs-on: [self-hosted, linux, lab]
-    timeout-minutes: 480
+    timeout-minutes: 720
     env:
       CI: "true"
       NIQUITAO_GIT: ${{ github.workspace }}/pNiquitao
@@ -60,7 +60,7 @@ jobs:
       E2E_FX_COMMISSION: "1"
     steps:
       - name: Checkout pNiquitao
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           repository: Ben-Gonzalez-97/pNiquitao
           ref: ${{ inputs.ref || 'main' }}
@@ -88,13 +88,13 @@ jobs:
           exit "$missing"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
           run_install: false
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -106,56 +106,86 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: pNiquitao/e2e
-        # --with-deps uses sudo; the runner user needs passwordless sudo or the host
-        # must already have the Playwright dependencies installed.
+        # --with-deps uses sudo; the runner user needs passwordless sudo for apt-get
+        # or the host must already have the Playwright dependencies installed.
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Run suite
         working-directory: pNiquitao
+        env:
+          SUITE: ${{ inputs.suite || 'nightly' }}
+          FORCE: ${{ inputs.force }}
+          PN_REF: ${{ inputs.ref || 'main' }}
         run: |
-          suite="${{ inputs.suite || 'nightly' }}"
-          echo "suite=${suite} ref=${{ inputs.ref || 'main' }}"
-          case "$suite" in
+          echo "suite=${SUITE} ref=${PN_REF}"
+          if [ "$SUITE" = "nightly" ] && [ "$PN_REF" != "main" ]; then
+            echo "::error::suite=nightly always tests pNiquitao main; use functional, stress, all-surfaces or smoke for another ref"
+            exit 64
+          fi
+          case "$SUITE" in
             nightly)
-              if [ "${{ inputs.force }}" = "true" ]; then
+              if [ "$FORCE" = "true" ]; then
                 bash e2e/scripts/nightly.sh run --force
               else
                 bash e2e/scripts/nightly.sh run
               fi
               ;;
-            functional)  pnpm --dir e2e run test:functional ;;
-            stress)      pnpm --dir e2e run test:stress ;;
+            functional)   pnpm --dir e2e run test:functional ;;
+            stress)       pnpm --dir e2e run test:stress ;;
             all-surfaces) pnpm --dir e2e run test:all-surfaces ;;
-            smoke)       pnpm --dir e2e run test:smoke ;;
+            smoke)        pnpm --dir e2e run test:smoke ;;
             *)
-              echo "::error::Unknown suite: ${suite}"
+              echo "::error::Unknown suite: ${SUITE}"
               exit 64
               ;;
           esac
 
-      - name: Publish summary
+      - name: Remove checkout credentials
+        if: always()
+        run: |
+          git -C pNiquitao config --unset-all http.https://github.com/.extraheader || true
+          rm -rf pNiquitao/e2e/.auth
+
+      - name: Prepare public summary
         if: always()
         working-directory: pNiquitao
+        env:
+          LAB_ORIGIN: ${{ secrets.E2E_BASE_URL }}
+          OBS_ORIGIN: ${{ secrets.E2E_OBS_LOGS_URL }}
+          GLITCHTIP_ORIGIN: ${{ secrets.E2E_GLITCHTIP_URL }}
         run: |
+          mkdir -p public-summary
           report="$(ls -1dt e2e/corridas/nightly-*.md 2>/dev/null | head -1 || true)"
-          summary="$(ls -1dt e2e/artifacts/nightly-*/summary.md 2>/dev/null | head -1 || true)"
-          for f in "$report" "$summary"; do
-            if [ -n "$f" ] && [ -f "$f" ]; then
-              cat "$f" >> "$GITHUB_STEP_SUMMARY"
-              printf '\n\n' >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+          if [ -n "$report" ] && [ -f "$report" ]; then
+            python3 - "$report" public-summary/nightly.md <<'PY'
+          import os
+          import sys
 
-      - name: Upload artifacts
+          source, target = sys.argv[1], sys.argv[2]
+          text = open(source, encoding="utf-8").read()
+          for key, token in (
+              ("LAB_ORIGIN", "<lab>"),
+              ("OBS_ORIGIN", "<lab-obs>"),
+              ("GLITCHTIP_ORIGIN", "<glitchtip>"),
+          ):
+              value = os.environ.get(key, "")
+              if value:
+                  text = text.replace(value, token)
+          open(target, "w", encoding="utf-8").write(text)
+          PY
+            cat public-summary/nightly.md >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No nightly summary was produced for this run." > public-summary/nightly.md
+          fi
+
+      - name: Upload sanitized summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: e2e-${{ inputs.suite || 'nightly' }}-${{ github.run_id }}
-          path: |
-            pNiquitao/e2e/artifacts/nightly-*/
-            pNiquitao/e2e/corridas/nightly-*.md
-            pNiquitao/e2e/test-results/
-            pNiquitao/e2e/test-results-*/
-            pNiquitao/e2e/playwright-report/
+          # Never upload test-results/, traces, videos or nightly logs here: this
+          # repository is public and Playwright traces can contain typed passwords.
+          name: e2e-summary-${{ github.run_id }}
+          path: pNiquitao/public-summary/
           if-no-files-found: ignore
           retention-days: 14
