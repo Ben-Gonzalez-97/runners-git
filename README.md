@@ -16,7 +16,7 @@ This repository is public on purpose:
 ```text
 GitHub (public repo)                 GitHub-hosted runner (ubuntu-latest, ephemeral)
 +-------------------------+          +---------------------------------------------+
-| runners-git             |          | gate: read latest pNiquitao/main SHA (PAT)   |
+| runners-git             |          | gate: read latest pNiquitao/main SHA (SSH)   |
 |  .github/workflows/     |   job    |       skip if that SHA is already tested    |
 |    e2e-heavy.yml  ------+--------->| e2e: 1. sparse checkout of pNiquitao/e2e     |
 +-------------------------+          |      2. pnpm install + Playwright Chromium  |
@@ -56,7 +56,7 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 
 | Secret | Required | Purpose |
 |--------|----------|---------|
-| `PNIQUITAO_TOKEN` | yes | Fine-grained PAT with **Contents: read** on `Ben-Gonzalez-97/pNiquitao` |
+| `PNIQUITAO_DEPLOY_KEY` | yes | OpenSSH private key whose public half is a **read-only deploy key** on `Ben-Gonzalez-97/pNiquitao` |
 | `E2E_BASE_URL` | yes | Lab origin (for example `https://lab.example`) |
 | `E2E_USER_GERENTE` / `E2E_PASSWORD_GERENTE` | yes | Lab manager credentials |
 | `E2E_USER_OPERADOR` / `E2E_PASSWORD_OPERADOR` | no | Operator role |
@@ -81,7 +81,7 @@ GitHub cannot trigger a workflow in this repository from a push in another repos
 A sender workflow in `pNiquitao` would need its own Actions minutes, which are exhausted.
 Instead, the nightly scheduled run checks whether there is something new to test:
 
-1. The `gate` job reads the latest `pNiquitao/main` SHA with the read-only PAT.
+1. The `gate` job reads the latest `pNiquitao/main` SHA over SSH with the read-only deploy key.
 2. It looks up the Actions cache key `pni-tested-<sha>`.
 3. If the key exists, the heavy job is skipped (that exact commit was already tested).
 4. If it does not exist, the heavy job runs and, after the suite, saves the marker.
@@ -124,9 +124,9 @@ therefore:
 
 - There is no `pull_request` or `pull_request_target` trigger: fork code never runs with
   secrets.
-- `PNIQUITAO_TOKEN` should be a fine-grained PAT limited to `pNiquitao` with
-  **Contents: read** only. Fine-grained PATs expire (one year maximum): rotate it before
-  it expires, otherwise the `gate` job fails and no scheduled run starts.
+- `PNIQUITAO_DEPLOY_KEY` is an SSH key whose public half is a **read-only deploy key** on
+  `pNiquitao` only: it cannot push, cannot read other repositories and does not expire.
+  Remove it from the repository settings to revoke it.
 - In **Settings -> Actions -> General -> Fork pull request workflows**, require approval
   for all outside collaborators.
 - Never print secret values in workflow steps.

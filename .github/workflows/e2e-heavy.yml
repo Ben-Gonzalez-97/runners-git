@@ -39,27 +39,21 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
       sha: ${{ steps.latest.outputs.sha }}
     steps:
-      - name: Check pNiquitao access
-        env:
-          PNI_TOKEN: ${{ secrets.PNIQUITAO_TOKEN }}
-        run: |
-          headers="$(curl -s -D - -o /dev/null \
-            -H "Authorization: Bearer ${PNI_TOKEN}" \
-            https://api.github.com/repos/Ben-Gonzalez-97/pNiquitao | tr -d '\r')"
-          status="$(printf '%s\n' "$headers" | head -1)"
-          echo "pNiquitao API: ${status:-no response}"
-          printf '%s\n' "$headers" | grep -i '^x-accepted-github-permissions:' || true
-          if ! printf '%s' "$status" | grep -q ' 200'; then
-            echo "::error::PNIQUITAO_TOKEN cannot read Ben-Gonzalez-97/pNiquitao (${status:-no response}). Fine-grained PAT: Resource owner Ben-Gonzalez-97, Repository access must include pNiquitao, Contents: Read-only, then Update token."
-            exit 1
-          fi
-
       - name: Latest pNiquitao main
         id: latest
         env:
-          GH_TOKEN: ${{ secrets.PNIQUITAO_TOKEN }}
+          SSH_KEY: ${{ secrets.PNIQUITAO_DEPLOY_KEY }}
         run: |
-          sha="$(gh api repos/Ben-Gonzalez-97/pNiquitao/commits/main --jq .sha)"
+          key="$RUNNER_TEMP/pni_deploy"
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$key"
+          chmod 600 "$key"
+          sha="$(GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            git ls-remote git@github.com:Ben-Gonzalez-97/pNiquitao.git refs/heads/main | cut -f1)"
+          rm -f "$key"
+          if [ -z "$sha" ]; then
+            echo "::error::PNIQUITAO_DEPLOY_KEY cannot read Ben-Gonzalez-97/pNiquitao. Add the public key as a read-only deploy key on that repository."
+            exit 1
+          fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "latest main: ${sha}"
 
@@ -119,25 +113,26 @@ jobs:
     steps:
       - name: Check pNiquitao access
         env:
-          PNI_TOKEN: ${{ secrets.PNIQUITAO_TOKEN }}
+          SSH_KEY: ${{ secrets.PNIQUITAO_DEPLOY_KEY }}
         run: |
-          headers="$(curl -s -D - -o /dev/null \
-            -H "Authorization: Bearer ${PNI_TOKEN}" \
-            https://api.github.com/repos/Ben-Gonzalez-97/pNiquitao | tr -d '\r')"
-          status="$(printf '%s\n' "$headers" | head -1)"
-          echo "pNiquitao API: ${status:-no response}"
-          printf '%s\n' "$headers" | grep -i '^x-accepted-github-permissions:' || true
-          if ! printf '%s' "$status" | grep -q ' 200'; then
-            echo "::error::PNIQUITAO_TOKEN cannot read Ben-Gonzalez-97/pNiquitao (${status:-no response}). Fine-grained PAT: Resource owner Ben-Gonzalez-97, Repository access must include pNiquitao, Contents: Read-only, then Update token."
+          key="$RUNNER_TEMP/pni_deploy"
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$key"
+          chmod 600 "$key"
+          sha="$(GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            git ls-remote git@github.com:Ben-Gonzalez-97/pNiquitao.git refs/heads/main | cut -f1)"
+          rm -f "$key"
+          if [ -z "$sha" ]; then
+            echo "::error::PNIQUITAO_DEPLOY_KEY cannot read Ben-Gonzalez-97/pNiquitao. Add the public key as a read-only deploy key on that repository."
             exit 1
           fi
+          echo "pNiquitao main: ${sha}"
 
       - name: Checkout pNiquitao (e2e tree)
         uses: actions/checkout@v7.0.1
         with:
           repository: Ben-Gonzalez-97/pNiquitao
           ref: ${{ inputs.ref || 'main' }}
-          token: ${{ secrets.PNIQUITAO_TOKEN }}
+          ssh-key: ${{ secrets.PNIQUITAO_DEPLOY_KEY }}
           path: pNiquitao
           # Only materialize e2e/. Full history is still fetched because nightly.sh
           # needs origin/main, product-path diffs and `git archive origin/main e2e`.
@@ -225,6 +220,7 @@ jobs:
         if: always()
         run: |
           git -C pNiquitao config --unset-all http.https://github.com/.extraheader || true
+          git -C pNiquitao config --unset-all core.sshCommand || true
           rm -rf pNiquitao/e2e/.auth
 
       - name: Prepare public summary
