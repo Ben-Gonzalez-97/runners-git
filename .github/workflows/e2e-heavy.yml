@@ -57,8 +57,6 @@ jobs:
       E2E_GLITCHTIP_EMAIL: ${{ secrets.E2E_GLITCHTIP_EMAIL }}
       E2E_GLITCHTIP_PASSWORD: ${{ secrets.E2E_GLITCHTIP_PASSWORD }}
       E2E_CREDENTIALS_FILE: ${{ secrets.E2E_CREDENTIALS_FILE }}
-      LAB_WAKE_URL: ${{ secrets.LAB_WAKE_URL }}
-      LAB_WAKE_TOKEN: ${{ secrets.LAB_WAKE_TOKEN }}
       E2E_FX_COMMISSION: "1"
     steps:
       - name: Checkout pNiquitao (e2e tree)

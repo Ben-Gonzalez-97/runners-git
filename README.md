@@ -34,7 +34,7 @@ diffs and `git archive origin/main e2e`.
 
 | Workflow | Trigger | What it runs |
 |----------|---------|--------------|
-| `E2E heavy (pNiquitao lab)` | `schedule` (01:06 UTC = 21:06 VET) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: wake, deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
+| `E2E heavy (pNiquitao lab)` | `schedule` (01:06 UTC = 21:06 VET) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
 
 Inputs:
 
@@ -61,9 +61,9 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 | `E2E_OBS_LOGS_URL`, `E2E_OBS_USER`, `E2E_OBS_PASSWORD` | no | VictoriaLogs observability |
 | `E2E_GLITCHTIP_URL`, `E2E_GLITCHTIP_EMAIL`, `E2E_GLITCHTIP_PASSWORD` | no | GlitchTip observability |
 | `E2E_CREDENTIALS_FILE` | no | Role-matrix credentials file path on the runner |
-| `LAB_WAKE_URL`, `LAB_WAKE_TOKEN` | no* | Lambda that wakes the lab |
 
-\* Required by `nightly.sh run` when the lab is asleep.
+The lab is expected to be always up; no wake Lambda is configured. If it is down,
+`nightly.sh` fails with `FAILED-INFRA` instead of waking it.
 
 ## Trigger a run
 
@@ -79,9 +79,8 @@ gh run watch
   functional (up to 3 surfaces) plus stress (up to 3 surfaces), so the worst case can
   exceed the cap. If the nightly is cancelled at 6 hours, run `suite: functional` and
   `suite: stress` as two separate manual runs (or split the schedule).
-- **Lab reachability.** GitHub-hosted runners use dynamic public IPs. If the lab or its
-  wake Lambda has an IP allowlist, the run will fail; `suite: smoke` is the fastest way
-  to check.
+- **Lab reachability.** GitHub-hosted runners use dynamic public IPs. If the lab has an
+  IP allowlist, the run will fail; `suite: smoke` is the fastest way to check.
 - **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
   otherwise it waits 30 minutes and exits `FAILED-INFRA`.
 - **Scheduled workflows** are disabled after 60 days without repository activity.
