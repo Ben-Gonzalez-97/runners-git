@@ -36,7 +36,7 @@ diffs and `git archive origin/main e2e`.
 
 | Workflow | Trigger | What it runs |
 |----------|---------|--------------|
-| `E2E heavy (pNiquitao lab)` | `schedule` every 15 min (gate checks `pNiquitao/main`) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
+| `E2E heavy (pNiquitao lab)` | `schedule` nightly at 23:00 VET (gate checks `pNiquitao/main`) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
 
 Inputs:
 
@@ -79,18 +79,21 @@ gh run watch
 
 GitHub cannot trigger a workflow in this repository from a push in another repository.
 A sender workflow in `pNiquitao` would need its own Actions minutes, which are exhausted.
-Instead, this workflow polls every 15 minutes:
+Instead, the nightly scheduled run checks whether there is something new to test:
 
 1. The `gate` job reads the latest `pNiquitao/main` SHA with the read-only PAT.
 2. It looks up the Actions cache key `pni-tested-<sha>`.
-3. If the key exists, the heavy job is skipped.
+3. If the key exists, the heavy job is skipped (that exact commit was already tested).
 4. If it does not exist, the heavy job runs and, after the suite, saves the marker.
 
-Each `pNiquitao/main` SHA is tested at most once automatically. A failed suite (exit
-`1`) is also marked as processed to avoid retrying every 15 minutes; use
-`workflow_dispatch` to retry it manually. A `FAILED-INFRA` result (exit `2`: lab down or
-deploy behind `main`) is **not** marked, so the next poll retries until the deploy
-catches up. Merge-to-result latency is up to ~15 minutes plus the ~1:10 suite.
+So the nightly runs at 23:00 Venezuela time and covers every commit merged during the
+day in a single run. A commit is tested at most once automatically. `workflow_dispatch`
+always bypasses the gate, so you can force a run at any moment.
+
+A failed suite (exit `1`) is also marked as processed to avoid repeating the same
+failure every night; use `workflow_dispatch` to retry it manually. A `FAILED-INFRA`
+result (exit `2`: lab down or deploy behind `main`) is **not** marked, so the next
+nightly retries it.
 
 If you later want exact push-triggered runs, add a `repository_dispatch` sender in
 `pNiquitao`; that small workflow consumes private Actions minutes, so it is not used here.
@@ -105,9 +108,8 @@ If you later want exact push-triggered runs, add a `repository_dispatch` sender 
 - **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
   otherwise it waits 30 minutes and exits `FAILED-INFRA`.
 - **Scheduled workflows** are disabled after 60 days without repository activity.
-- **Concurrency.** The `e2e-lab` group serializes only the heavy job, so a 15-minute gate
-  poll is never blocked behind an in-flight run. GitHub keeps at most one pending run per
-  group; newer polls replace the pending one.
+- **Concurrency.** The `e2e-lab` group serializes the heavy job: a manual run never
+  overlaps the nightly.
 
 ## Artifacts and public visibility
 

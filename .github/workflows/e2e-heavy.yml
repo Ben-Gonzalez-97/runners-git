@@ -2,9 +2,9 @@ name: E2E heavy (pNiquitao lab)
 
 on:
   schedule:
-    # Poll every 15 minutes. The `gate` job runs the heavy suite only when
-    # pNiquitao/main has a commit that has not been tested yet.
-    - cron: "7,22,37,52 * * * *"
+    # Once a night at 03:00 UTC = 23:00 America/Caracas (UTC-4). The `gate` job
+    # skips the heavy suite when pNiquitao/main has not changed since the last run.
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       suite:
@@ -76,7 +76,7 @@ jobs:
     # Manual dispatch always runs; scheduled runs only run when the gate says the
     # current pNiquitao/main SHA has not been tested yet.
     if: always() && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.run == 'true')
-    # Serialize the heavy job only, so 15-minute gate polls are never blocked behind a run.
+    # Serialize the heavy job: a manual run never overlaps the nightly.
     concurrency:
       group: e2e-lab
       cancel-in-progress: false
@@ -244,7 +244,7 @@ jobs:
 
       - name: Mark pNiquitao SHA as processed
         # exit=2 means FAILED-INFRA (lab not ready or deploy behind main): leave the SHA
-        # unmarked so the next poll retries once the deploy catches up.
+        # unmarked so the next nightly retries once the deploy catches up.
         if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && steps.suite.outputs.exit != '2'
         env:
           SHA: ${{ needs.gate.outputs.sha }}
