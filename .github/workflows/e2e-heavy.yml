@@ -2,13 +2,15 @@ name: E2E heavy (pNiquitao lab)
 
 on:
   schedule:
-    # Once a night at 03:00 UTC = 23:00 America/Caracas (UTC-4). The `gate` job
-    # skips the heavy suite when pNiquitao/main has not changed since the last run.
-    - cron: "0 3 * * *"
+    # Fallback only. The lab dispatches this workflow at 03:00 UTC (23:00
+    # America/Caracas) through the Actions API, because GitHub's scheduler is
+    # best-effort and can start hours late. This cron runs at 01:30 local time
+    # and the gate skips it when the lab already ran and marked that SHA.
+    - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
       suite:
-        description: "Suite to run (manual dispatch always bypasses the gate)"
+        description: "Suite to run (a manual dispatch bypasses the gate unless gate=true)"
         type: choice
         default: nightly
         options:
@@ -25,6 +27,10 @@ on:
         description: "nightly only: skip the product-merge gate"
         type: boolean
         default: false
+      gate:
+        description: "External trigger: apply the SHA gate and write the tested marker"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,7 +38,9 @@ permissions:
 jobs:
   gate:
     name: Check for a new pNiquitao main commit
-    if: github.event_name == 'schedule'
+    # Runs on the fallback cron and on dispatches from the lab, which pass
+    # gate=true so the external trigger respects the same tested-SHA marker.
+    if: github.event_name == 'schedule' || inputs.gate == true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -82,9 +90,9 @@ jobs:
   e2e:
     name: ${{ inputs.suite || 'nightly' }} · pNiquitao@${{ inputs.ref || 'main' }}
     needs: gate
-    # Manual dispatch always runs; scheduled runs only run when the gate says the
-    # current pNiquitao/main SHA has not been tested yet.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.gate.outputs.run == 'true')
+    # Manual dispatch runs unless it asks for the gate; gated runs only run when the
+    # gate says the current pNiquitao/main SHA has not been tested yet.
+    if: always() && (needs.gate.outputs.run == 'true' || (github.event_name == 'workflow_dispatch' && inputs.gate != true))
     # Serialize the heavy job: a manual run never overlaps the nightly.
     concurrency:
       group: e2e-lab
@@ -330,24 +338,69 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          # Encrypted to an SSH public key whose private half never leaves the operator.
+          # Offsite copy, encrypted to an SSH public key whose private half never leaves
+          # the operator. The lab keeps the primary (plaintext) bundle.
           name: e2e-raw-${{ github.run_id }}
           path: encrypted-artifacts/
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 7
+
+      - name: Upload raw artifacts to the lab
+        # The lab copy is the primary debugging surface: traces, videos, per-surface logs
+        # and metrics travel over a key whose only power is the receive forced command.
+        # A debugging aid must never turn a green nightly red.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          ARTIFACTS_KEY: ${{ secrets.E2E_ARTIFACTS_SSH_KEY }}
+          ARTIFACTS_TARGET: ${{ secrets.E2E_ARTIFACTS_TARGET }}
+          ARTIFACTS_KNOWN_HOSTS: ${{ secrets.E2E_ARTIFACTS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          src="pNiquitao/e2e"
+          if [ -z "${ARTIFACTS_KEY:-}" ] || [ -z "${ARTIFACTS_TARGET:-}" ]; then
+            echo "::warning::E2E_ARTIFACTS_SSH_KEY or E2E_ARTIFACTS_TARGET is not set; skipping the lab copy"
+            exit 0
+          fi
+
+          paths=()
+          for d in artifacts corridas test-results; do
+            if [ -d "$src/$d" ]; then
+              paths+=("$d")
+            fi
+          done
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "No raw artifacts to upload."
+            exit 0
+          fi
+
+          umask 077
+          key="$RUNNER_TEMP/e2e-artifacts-key"
+          printf '%s\n' "$ARTIFACTS_KEY" | tr -d '\r' > "$key"
+          chmod 600 "$key"
+          printf '%s\n' "${ARTIFACTS_KNOWN_HOSTS:-}" | tr -d '\r' > "$RUNNER_TEMP/e2e-known-hosts"
+          tar -czf - -C "$src" "${paths[@]}" \
+            | ssh -i "$key" \
+                -o IdentitiesOnly=yes \
+                -o BatchMode=yes \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/e2e-known-hosts" \
+                "$ARTIFACTS_TARGET" "receive ${GITHUB_RUN_ID}"
+          rm -f "$key" "$RUNNER_TEMP/e2e-known-hosts"
 
       - name: Mark pNiquitao SHA as processed
         # Only a suite that actually ran may mark the SHA. An empty exit means the step was
         # skipped (checkout, install or setup failed), and exit=2 means FAILED-INFRA (lab
         # not ready or deploy behind main): both must leave the SHA unmarked so the next
         # nightly retries it instead of silently skipping a build nobody tested.
-        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
+        if: always() && (github.event_name == 'schedule' || inputs.gate == true) && (inputs.ref || 'main') == 'main' && (inputs.suite || 'nightly') == 'nightly' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
         env:
           SHA: ${{ needs.gate.outputs.sha }}
         run: printf '%s\n' "$SHA" > .tested-sha
 
       - name: Save processed marker
-        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
+        if: always() && (github.event_name == 'schedule' || inputs.gate == true) && (inputs.ref || 'main') == 'main' && (inputs.suite || 'nightly') == 'nightly' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
         uses: actions/cache/save@v6
         continue-on-error: true
         with:
