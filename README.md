@@ -36,15 +36,16 @@ diffs and `git archive origin/main e2e`.
 
 | Workflow | Trigger | What it runs |
 |----------|---------|--------------|
-| `E2E heavy (pNiquitao lab)` | `schedule` nightly at 23:00 VET (gate checks `pNiquitao/main`) and `workflow_dispatch` | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
+| `E2E heavy (pNiquitao lab)` | The lab dispatches it at 23:00 VET through the Actions API (`gate=true`); a fallback `schedule` at 01:30 VET covers a missing dispatch; `workflow_dispatch` for manual runs | `e2e/scripts/nightly.sh run`: deploy check, functional web -> mobile -> pwa, stress web -> mobile -> pwa, observability, summary and artifacts |
 
 Inputs:
 
 | Input | Default | Meaning |
 |-------|---------|---------|
-| `suite` | `nightly` | `nightly`, `functional`, `stress`, `all-surfaces` or `smoke`; manual dispatch always bypasses the gate |
+| `suite` | `nightly` | `nightly`, `functional`, `stress`, `all-surfaces` or `smoke`; a manual dispatch bypasses the gate |
 | `ref` | `main` | `pNiquitao` ref to test; `nightly` always tests `main` and rejects other refs |
 | `force` | `false` | `nightly` only: skip the product-merge gate |
+| `gate` | `false` | External trigger: run the SHA gate and write the tested marker. The lab sends `true`; only `suite=nightly` on `ref=main` marks a SHA |
 
 > `nightly.sh run` also waits for the lab deployment to match `main` (30 min by default)
 > and exits `2` (`FAILED-INFRA`) otherwise. Deploy the lab first, or run
@@ -63,7 +64,10 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 | `E2E_OBS_LOGS_URL`, `E2E_OBS_USER`, `E2E_OBS_PASSWORD` | no | VictoriaLogs observability |
 | `E2E_GLITCHTIP_URL`, `E2E_GLITCHTIP_EMAIL`, `E2E_GLITCHTIP_PASSWORD` | no | GlitchTip observability |
 | `E2E_CREDENTIALS_FILE` | no | Role-matrix credentials file path on the runner |
-| `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | no | OpenSSH **public** key used by `age` to encrypt the raw artifacts (not sensitive) |
+| `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | no | OpenSSH **public** key used by `age` to encrypt the GitHub copy of the raw artifacts (not sensitive) |
+| `E2E_ARTIFACTS_SSH_KEY` | no | Private key whose public half is restricted to the `receive` command on the lab (lab copy) |
+| `E2E_ARTIFACTS_TARGET` | no | SSH target for the lab copy, for example `deploy@203.0.113.10` |
+| `E2E_ARTIFACTS_KNOWN_HOSTS` | no | Pinned lab host key for that target, so the runner never learns it on first use |
 
 The lab is expected to be always up; no wake Lambda is configured. If it is down,
 `nightly.sh` fails with `FAILED-INFRA` instead of waking it.
@@ -76,21 +80,40 @@ gh workflow run e2e-heavy.yml -f suite=smoke
 gh run watch
 ```
 
+## Nightly launcher on the lab
+
+`on: schedule` is best-effort: GitHub documents delays under load, and this workflow was
+observed starting 7h40m late. The lab (always up) therefore owns the exact hour:
+
+- A `crontab` entry on the lab runs at `0 3 * * *` UTC = 23:00 `America/Caracas`:
+  `/home/deploy/bin/runners-git-nightly`.
+- It POSTs `workflow_dispatch` with `suite=nightly` and `gate=true` using a fine-grained
+  PAT stored at `~/.config/runners-git/token` (mode 600) with **Actions: write** on this
+  repository only.
+- The fallback cron `30 5 * * *` (01:30 VET) covers a missing dispatch: the gate finds
+  the SHA already marked and skips the heavy job.
+
+The launcher appends one line per dispatch to `~/runners-git-nightly.log` on the lab. A
+missing or expired token is logged there and the fallback cron takes over.
+
 ## Run on new merges
 
 GitHub cannot trigger a workflow in this repository from a push in another repository.
 A sender workflow in `pNiquitao` would need its own Actions minutes, which are exhausted.
-Instead, the nightly scheduled run checks whether there is something new to test:
+Instead, the nightly run (lab dispatch or fallback cron) checks whether there is something
+new to test:
 
 1. The `gate` job reads the latest `pNiquitao/main` SHA over SSH with the read-only deploy key.
 2. It looks up the Actions cache key `pni-tested-<sha>`.
 3. If the key exists, the heavy job is skipped (that exact commit was already tested).
 4. If it does not exist, the heavy job runs and, after the suite actually executed
-   (exit `0` or `1`), saves the marker.
+   (exit `0` or `1`), saves the marker. Only `suite=nightly` on `ref=main` marks a SHA,
+   so a gated smoke test cannot hide an untested commit.
 
 So the nightly runs at 23:00 Venezuela time and covers every commit merged during the
-day in a single run. A commit is tested at most once automatically. `workflow_dispatch`
-always bypasses the gate, so you can force a run at any moment.
+day in a single run. A commit is tested at most once automatically. A
+`workflow_dispatch` without `gate=true` bypasses the gate, so you can force a run at any
+moment.
 
 A failed suite (exit `1`) is also marked as processed to avoid repeating the same
 failure every night; use `workflow_dispatch` to retry it manually. A run that never
@@ -111,11 +134,10 @@ If you later want exact push-triggered runs, add a `repository_dispatch` sender 
 - **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
   otherwise it waits 30 minutes and exits `FAILED-INFRA`.
 - **Scheduled workflows** are disabled after 60 days without repository activity.
-- **The cron hour is best-effort.** `schedule` is `0 3 * * *` UTC (23:00 VET), but GitHub
-  documents that scheduled events can be delayed during high load, and the delay can be
-  hours; a dispatch may also be dropped. The gate keeps that harmless (a late run still
-  tests the same commit once), but if you ever need an exact hour, trigger
-  `workflow_dispatch` from an external clock instead of relying on the cron.
+- **The fallback cron is best-effort.** The fallback `schedule` is `30 5 * * *` UTC
+  (01:30 VET) and GitHub may delay or drop it; that is why the lab owns the exact 23:00
+  dispatch. The gate keeps a late fallback harmless (a late run still tests the same
+  commit once).
 - **Runtime versions follow pNiquitao.** The workflow reads `engines.node` from
   `pNiquitao/e2e/package.json` and installs that major, so a bump there does not need a
   change here. `pnpm` stays pinned to `11.5.3`, matching that file's `packageManager`.
@@ -124,19 +146,31 @@ If you later want exact push-triggered runs, add a `repository_dispatch` sender 
 
 ## Artifacts and public visibility
 
-Workflow logs and step summaries in a public repository are public. The workflow
-therefore uploads two artifacts:
+Workflow logs and step summaries in a public repository are public. Raw Playwright output
+never reaches GitHub in the clear. Three copies exist:
 
-| Artifact | Contents | Retention |
+| Location | Contents | Retention |
 |----------|----------|-----------|
-| `e2e-summary-<run_id>` | Nightly report with the lab, VictoriaLogs and GlitchTip origins replaced by `<lab>`, `<lab-obs>` and `<glitchtip>` | 14 days |
-| `e2e-raw-<run_id>` | `artifacts/`, `corridas/` and `test-results/` (logs, metrics, traces, videos, screenshots) packed and encrypted with `age` | 30 days |
+| Lab `~/runners-git-artifacts/<run_id>/` | `artifacts/`, `corridas/` and `test-results/` (logs, metrics, traces, videos, screenshots), plaintext | 30 days, pruned by the receiver |
+| GitHub `e2e-raw-<run_id>` | The same bundle encrypted with `age` to `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | 7 days |
+| GitHub `e2e-summary-<run_id>` | Nightly report with the lab, VictoriaLogs and GlitchTip origins replaced by `<lab>`, `<lab-obs>` and `<glitchtip>` | 14 days |
 
-The raw bundle is encrypted to an OpenSSH public key (`E2E_ARTIFACTS_SSH_PUBLIC_KEY`);
-the private half never leaves the operator, so publishing the blob is safe even though a
-failed login trace can contain the typed lab password.
+The lab copy travels over SSH with a key whose `authorized_keys` entry is
+`command="/home/deploy/bin/runners-git-receive",restrict`: it can only stream a tar into
+that directory, cannot open a shell and cannot read anything else. The receiver accepts
+only `receive <numeric run id>`, extracts with `--no-same-owner` and deletes bundles older
+than 30 days.
 
-Decrypt a run locally:
+Inspect a run on the lab:
+
+```bash
+ssh deploy@<lab> 'ls -la ~/runners-git-artifacts/'
+ssh deploy@<lab> 'cat ~/runners-git-artifacts/<run_id>/artifacts/nightly-*/nightly.log'
+```
+
+The encrypted offsite copy is safe to publish because the private half of the `age` key
+never leaves the operator, even though a failed login trace can contain the typed lab
+password. Decrypt it locally:
 
 ```bash
 gh run download <run_id> --repo Ben-Gonzalez-97/runners-git -n e2e-raw-<run_id>
@@ -144,8 +178,8 @@ age -d -i ~/.ssh/runners-git-e2e-artifacts -o e2e-artifacts.tar.gz e2e-artifacts
 tar -xzf e2e-artifacts.tar.gz
 ```
 
-If the secret is not set, the workflow skips the raw bundle with a warning and still
-uploads the sanitized summary; a failure while encrypting never fails a green run.
+If the lab secrets are not set, the workflow skips that copy with a warning and still
+uploads the sanitized summary. Upload failures never fail a green run.
 
 ## Failure notifications
 
@@ -161,8 +195,11 @@ everything needed to debug the failure.
 - `PNIQUITAO_DEPLOY_KEY` is an SSH key whose public half is a **read-only deploy key** on
   `pNiquitao` only: it cannot push, cannot read other repositories and does not expire.
   Remove it from the repository settings to revoke it.
+- `E2E_ARTIFACTS_SSH_KEY` is restricted on the lab by an `authorized_keys` forced command:
+  it can only stream a tar into `~/runners-git-artifacts/`, with no shell.
 - In **Settings -> Actions -> General -> Fork pull request workflows**, require approval
   for all outside collaborators.
 - Never print secret values in workflow steps.
-- Raw Playwright traces and `test-results/` leave the runner only inside the `age`
-  bundle, never unencrypted: traces can contain values typed into login forms.
+- Raw Playwright traces leave the runner only inside the `age` bundle (GitHub) or over
+  SSH to the lab; never unencrypted on GitHub, because traces can contain values typed
+  into login forms.
