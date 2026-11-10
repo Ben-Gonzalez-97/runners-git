@@ -165,10 +165,26 @@ jobs:
           version: 11.5.3
           run_install: false
 
+      - name: Resolve Node version from pNiquitao
+        # pNiquitao/main pins the runtime in e2e/package.json (engines.node) and bumps it
+        # without warning. Following it here turns an overnight install failure caused by
+        # a stale pin (for example ^26 while this workflow used 22) into a non-issue.
+        id: node_version
+        working-directory: pNiquitao/e2e
+        run: |
+          spec="$(node -p "require('./package.json').engines?.node || ''" 2>/dev/null || true)"
+          major="$(printf '%s' "$spec" | grep -oE '[0-9]+' | head -1 || true)"
+          if [ -z "$major" ]; then
+            echo "::warning::pNiquitao/e2e/package.json declares no engines.node; falling back to 22"
+            major=22
+          fi
+          echo "version=${major}" >> "$GITHUB_OUTPUT"
+          echo "pNiquitao requires node '${spec:-<none>}', using ${major}"
+
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ steps.node_version.outputs.version }}
           cache: pnpm
           cache-dependency-path: pNiquitao/e2e/pnpm-lock.yaml
 
@@ -321,15 +337,17 @@ jobs:
           retention-days: 30
 
       - name: Mark pNiquitao SHA as processed
-        # exit=2 means FAILED-INFRA (lab not ready or deploy behind main): leave the SHA
-        # unmarked so the next nightly retries once the deploy catches up.
-        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && steps.suite.outputs.exit != '2'
+        # Only a suite that actually ran may mark the SHA. An empty exit means the step was
+        # skipped (checkout, install or setup failed), and exit=2 means FAILED-INFRA (lab
+        # not ready or deploy behind main): both must leave the SHA unmarked so the next
+        # nightly retries it instead of silently skipping a build nobody tested.
+        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
         env:
           SHA: ${{ needs.gate.outputs.sha }}
         run: printf '%s\n' "$SHA" > .tested-sha
 
       - name: Save processed marker
-        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && steps.suite.outputs.exit != '2'
+        if: always() && github.event_name == 'schedule' && needs.gate.outputs.sha != '' && (steps.suite.outputs.exit == '0' || steps.suite.outputs.exit == '1')
         uses: actions/cache/save@v6
         continue-on-error: true
         with:

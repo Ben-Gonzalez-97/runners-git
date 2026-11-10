@@ -85,16 +85,18 @@ Instead, the nightly scheduled run checks whether there is something new to test
 1. The `gate` job reads the latest `pNiquitao/main` SHA over SSH with the read-only deploy key.
 2. It looks up the Actions cache key `pni-tested-<sha>`.
 3. If the key exists, the heavy job is skipped (that exact commit was already tested).
-4. If it does not exist, the heavy job runs and, after the suite, saves the marker.
+4. If it does not exist, the heavy job runs and, after the suite actually executed
+   (exit `0` or `1`), saves the marker.
 
 So the nightly runs at 23:00 Venezuela time and covers every commit merged during the
 day in a single run. A commit is tested at most once automatically. `workflow_dispatch`
 always bypasses the gate, so you can force a run at any moment.
 
 A failed suite (exit `1`) is also marked as processed to avoid repeating the same
-failure every night; use `workflow_dispatch` to retry it manually. A `FAILED-INFRA`
-result (exit `2`: lab down or deploy behind `main`) is **not** marked, so the next
-nightly retries it.
+failure every night; use `workflow_dispatch` to retry it manually. A run that never
+reached the suite (checkout, `pnpm install`, Playwright setup) and a `FAILED-INFRA`
+result (exit `2`: lab down or deploy behind `main`) are **not** marked, so the next
+nightly retries them instead of silently skipping an untested commit.
 
 If you later want exact push-triggered runs, add a `repository_dispatch` sender in
 `pNiquitao`; that small workflow consumes private Actions minutes, so it is not used here.
@@ -109,6 +111,14 @@ If you later want exact push-triggered runs, add a `repository_dispatch` sender 
 - **Lab deploy precondition.** `nightly` requires the lab deployment to match `main`;
   otherwise it waits 30 minutes and exits `FAILED-INFRA`.
 - **Scheduled workflows** are disabled after 60 days without repository activity.
+- **The cron hour is best-effort.** `schedule` is `0 3 * * *` UTC (23:00 VET), but GitHub
+  documents that scheduled events can be delayed during high load, and the delay can be
+  hours; a dispatch may also be dropped. The gate keeps that harmless (a late run still
+  tests the same commit once), but if you ever need an exact hour, trigger
+  `workflow_dispatch` from an external clock instead of relying on the cron.
+- **Runtime versions follow pNiquitao.** The workflow reads `engines.node` from
+  `pNiquitao/e2e/package.json` and installs that major, so a bump there does not need a
+  change here. `pnpm` stays pinned to `11.5.3`, matching that file's `packageManager`.
 - **Concurrency.** The `e2e-lab` group serializes the heavy job: a manual run never
   overlaps the nightly.
 
