@@ -218,8 +218,10 @@ jobs:
             if pnpm exec playwright install --with-deps chromium; then
               exit 0
             fi
-            echo "::warning::playwright install failed (attempt ${attempt}/3); retrying in 15s"
-            sleep 15
+            echo "::warning::playwright install failed (attempt ${attempt}/3)"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 15
+            fi
           done
           echo "::error::playwright install failed after 3 attempts"
           exit 1
