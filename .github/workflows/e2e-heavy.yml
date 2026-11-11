@@ -211,7 +211,18 @@ jobs:
 
       - name: Install Playwright Chromium
         working-directory: pNiquitao/e2e
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          # apt mirrors on GitHub-hosted runners occasionally fail to resolve; that must
+          # not fail a nightly that is otherwise fine, so retry the whole install.
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "::warning::playwright install failed (attempt ${attempt}/3); retrying in 15s"
+            sleep 15
+          done
+          echo "::error::playwright install failed after 3 attempts"
+          exit 1
 
       - name: Run suite
         id: suite
