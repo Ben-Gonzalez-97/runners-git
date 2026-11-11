@@ -92,9 +92,19 @@ observed starting 7h40m late. The lab (always up) therefore owns the exact hour:
   repository only.
 - The fallback cron `30 5 * * *` (01:30 VET) covers a missing dispatch: the gate finds
   the SHA already marked and skips the heavy job.
+- The gate drops any scheduled delivery that arrives at or after `06:00` UTC and logs the
+  reason: GitHub's scheduler has been observed running this cron more than seven hours
+  late, which would start the suite in the middle of the working day.
 
 The launcher appends one line per dispatch to `~/runners-git-nightly.log` on the lab. A
 missing or expired token is logged there and the fallback cron takes over.
+
+It takes an optional suite argument, which is the cheap way to check the token and the
+dispatch path without running the full suite during the day:
+
+```bash
+/home/deploy/bin/runners-git-nightly smoke
+```
 
 ## Run on new merges
 

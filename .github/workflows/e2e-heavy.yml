@@ -79,7 +79,14 @@ jobs:
           CACHE_HIT: ${{ steps.marker.outputs.cache-hit }}
           SHA: ${{ steps.latest.outputs.sha }}
         run: |
-          if [ "$CACHE_HIT" = "true" ]; then
+          # GitHub's scheduler is best-effort: this cron has arrived 7h40m and 7h22m
+          # late, i.e. mid-morning in Caracas. The lab timer owns the 03:00 UTC slot, so a
+          # delayed delivery must never start a full suite while people are using the lab.
+          hour="$(date -u +%-H)"
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$hour" -ge 6 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Late scheduled trigger at $(date -u +%FT%TZ); skipping, the next run retries."
+          elif [ "$CACHE_HIT" = "true" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Already tested: ${SHA}"
           else
@@ -88,7 +95,9 @@ jobs:
           fi
 
   e2e:
-    name: ${{ inputs.suite || 'nightly' }} · pNiquitao@${{ inputs.ref || 'main' }}
+    # github.event.inputs (not the inputs context): the inputs context is unavailable on
+    # schedule events, and the job name then renders as a raw ${{ ... }} expression.
+    name: ${{ github.event.inputs.suite || 'nightly' }} · pNiquitao@${{ github.event.inputs.ref || 'main' }}
     needs: gate
     # Manual dispatch runs unless it asks for the gate; gated runs only run when the
     # gate says the current pNiquitao/main SHA has not been tested yet.
