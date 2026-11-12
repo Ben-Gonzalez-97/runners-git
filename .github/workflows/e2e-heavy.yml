@@ -95,8 +95,8 @@ jobs:
           fi
 
   e2e:
-    # github.event.inputs (not the inputs context): the inputs context is unavailable on
-    # schedule events, and the job name then renders as a raw ${{ ... }} expression.
+    # github.event.inputs: the inputs context only exists for dispatch/call events.
+    # GitHub shows the raw ${{ ... }} text for jobs it skips (observed on schedule runs).
     name: ${{ github.event.inputs.suite || 'nightly' }} · pNiquitao@${{ github.event.inputs.ref || 'main' }}
     needs: gate
     # Manual dispatch runs unless it asks for the gate; gated runs only run when the
