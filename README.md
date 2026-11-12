@@ -28,7 +28,9 @@ GitHub (public repo)                 GitHub-hosted runner (ubuntu-latest, epheme
                                                    Niquitao lab environment
 ```
 
-The checkout uses `sparse-checkout: e2e`: only the `e2e/` working tree is materialized.
+The checkout uses `sparse-checkout` for `e2e` and `docs/qa`: only those working trees are
+materialized. `docs/qa/CREDENCIALES.md` holds the per-role lab accounts the role-matrix
+and transaction-audit specs need; without it they skip.
 Full git history is still fetched because `nightly.sh` needs `origin/main`, product-path
 diffs and `git archive origin/main e2e`.
 
@@ -63,7 +65,7 @@ Create these in **Settings -> Secrets and variables -> Actions**:
 | `E2E_USER_OPERADOR` / `E2E_PASSWORD_OPERADOR` | no | Operator role |
 | `E2E_OBS_LOGS_URL`, `E2E_OBS_USER`, `E2E_OBS_PASSWORD` | no | VictoriaLogs observability |
 | `E2E_GLITCHTIP_URL`, `E2E_GLITCHTIP_EMAIL`, `E2E_GLITCHTIP_PASSWORD` | no | GlitchTip observability |
-| `E2E_CREDENTIALS_FILE` | no | Role-matrix credentials file path on the runner |
+| `E2E_CREDENTIALS_FILE` | no | Overrides the role-matrix credentials file path on the runner (default: the checked-out `docs/qa/CREDENCIALES.md`) |
 | `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | no | OpenSSH **public** key used by `age` to encrypt the GitHub copy of the raw artifacts (not sensitive) |
 | `E2E_ARTIFACTS_SSH_KEY` | no | Private key whose public half is restricted to the `receive` command on the lab (lab copy) |
 | `E2E_ARTIFACTS_TARGET` | no | SSH target for the lab copy, for example `deploy@203.0.113.10` |

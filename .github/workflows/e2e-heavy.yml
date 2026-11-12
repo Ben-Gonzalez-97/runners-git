@@ -151,9 +151,13 @@ jobs:
           ref: ${{ inputs.ref || 'main' }}
           ssh-key: ${{ secrets.PNIQUITAO_DEPLOY_KEY }}
           path: pNiquitao
-          # Only materialize e2e/. Full history is still fetched because nightly.sh
-          # needs origin/main, product-path diffs and `git archive origin/main e2e`.
-          sparse-checkout: e2e
+          # Only materialize e2e/ and docs/qa/ (role accounts the kit reads from
+          # docs/qa/CREDENCIALES.md; without it the role-matrix and audit specs skip).
+          # Full history is still fetched because nightly.sh needs origin/main,
+          # product-path diffs and `git archive origin/main e2e`.
+          sparse-checkout: |
+            e2e
+            docs/qa
           fetch-depth: 0
 
       - name: Environment info
