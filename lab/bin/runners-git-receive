@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Forced command for the runners-git artifact upload key.
+# Accepts exactly one request:  receive <run_id>
+# Reads a tar.gz stream on stdin and extracts it under the artifacts root.
+set -euo pipefail
+
+root="/home/deploy/runners-git-artifacts"
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+
+case "$cmd" in
+  receive\ *) run_id="${cmd#receive }" ;;
+  *)
+    echo "refused: only 'receive <run_id>' is allowed" >&2
+    exit 1
+    ;;
+esac
+
+case "$run_id" in
+  '' | *[!0-9]*)
+    echo "refused: run_id must be numeric" >&2
+    exit 1
+    ;;
+esac
+
+umask 077
+mkdir -p "$root"
+
+# Retention in days. This disk is shared with the lab application. A forced command gets no
+# environment, so ARTIFACTS_RETENTION_DAYS is read from the config file (default: 7).
+env_file="/home/deploy/.config/runners-git/env"
+days="$(sed -nE 's/^ARTIFACTS_RETENTION_DAYS=([0-9]+)$/\1/p' "$env_file" 2>/dev/null | tail -n 1 || true)"
+days="${days:-7}"
+find "$root" -mindepth 1 -maxdepth 1 -type d -mmin "+$((10#$days * 1440))" -exec rm -rf {} +
+
+dir="$root/${run_id}"
+rm -rf "$dir"
+mkdir -p "$dir"
+
+if ! timeout 900 tar -xzf - -C "$dir" --no-same-owner --no-same-permissions --no-overwrite-dir; then
+  echo "extract failed, removing partial bundle" >&2
+  rm -rf "$dir"
+  exit 1
+fi
+
+bytes="$(du -sh "$dir" | cut -f1)"
+echo "stored ${bytes} in ${dir}"

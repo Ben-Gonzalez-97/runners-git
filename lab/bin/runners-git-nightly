@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Dispatches the nightly E2E run at 03:00 UTC (23:00 America/Caracas).
+# Installed as a deploy crontab entry; needs no sudo and no interactive session.
+# Usage: runners-git-nightly [suite]   (default: nightly; use smoke for a quick check)
+set -euo pipefail
+
+suite="${1:-nightly}"
+case "$suite" in
+  nightly | functional | stress | all-surfaces | smoke) ;;
+  *)
+    echo "error: unknown suite '$suite'" >&2
+    exit 64
+    ;;
+esac
+
+token_file="/home/deploy/.config/runners-git/token"
+api="https://api.github.com/repos/Ben-Gonzalez-97/runners-git/actions/workflows/e2e-heavy.yml/dispatches"
+
+if [ ! -r "$token_file" ]; then
+  echo "$(date -u +%FT%TZ) error: missing token file $token_file" >&2
+  exit 1
+fi
+
+token="$(tr -d '\r\n' < "$token_file")"
+if [ -z "$token" ]; then
+  echo "$(date -u +%FT%TZ) error: token file is empty" >&2
+  exit 1
+fi
+
+out="$(mktemp)"
+code="$(curl -sS -o "$out" -w '%{http_code}' --max-time 30 \
+  -X POST \
+  -H "Authorization: Bearer ${token}" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  -d "{\"ref\":\"main\",\"inputs\":{\"suite\":\"${suite}\",\"gate\":\"true\"}}" \
+  "$api")"
+
+echo "$(date -u +%FT%TZ) dispatch HTTP ${code} suite=${suite}"
+if [ "$code" != "204" ]; then
+  sed -n '1,5p' "$out" >&2
+  rm -f "$out"
+  exit 1
+fi
+rm -f "$out"

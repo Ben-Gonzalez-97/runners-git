@@ -316,7 +316,9 @@ jobs:
           name: e2e-summary-${{ github.run_id }}
           path: pNiquitao/public-summary/
           if-no-files-found: ignore
-          retention-days: 14
+          # Actions variable (Settings -> Secrets and variables -> Actions ->
+          # Variables), integer days; falls back to 7 when unset.
+          retention-days: ${{ vars.E2E_SUMMARY_RETENTION_DAYS || 7 }}
 
       - name: Encrypt raw artifacts
         # A debugging aid must never turn a green nightly red: failures here are visible
@@ -369,7 +371,9 @@ jobs:
           name: e2e-raw-${{ github.run_id }}
           path: encrypted-artifacts/
           if-no-files-found: ignore
-          retention-days: 7
+          # Actions variable (Settings -> Secrets and variables -> Actions ->
+          # Variables), integer days; falls back to 7 when unset.
+          retention-days: ${{ vars.E2E_RAW_RETENTION_DAYS || 7 }}
 
       - name: Upload raw artifacts to the lab
         # The lab copy is the primary debugging surface: traces, videos, per-surface logs

@@ -163,15 +163,35 @@ never reaches GitHub in the clear. Three copies exist:
 
 | Location | Contents | Retention |
 |----------|----------|-----------|
-| Lab `~/runners-git-artifacts/<run_id>/` | `artifacts/`, `corridas/` and `test-results/` (logs, metrics, traces, videos, screenshots), plaintext | 30 days, pruned by the receiver |
-| GitHub `e2e-raw-<run_id>` | The same bundle encrypted with `age` to `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | 7 days |
-| GitHub `e2e-summary-<run_id>` | Nightly report with the lab, VictoriaLogs and GlitchTip origins replaced by `<lab>`, `<lab-obs>` and `<glitchtip>` | 14 days |
+| Lab `~/runners-git-artifacts/<run_id>/` | `artifacts/`, `corridas/` and `test-results/` (logs, metrics, traces, videos, screenshots), plaintext | `ARTIFACTS_RETENTION_DAYS` days (default 7), pruned by the receiver |
+| GitHub `e2e-raw-<run_id>` | The same bundle encrypted with `age` to `E2E_ARTIFACTS_SSH_PUBLIC_KEY` | `E2E_RAW_RETENTION_DAYS` days (default 7) |
+| GitHub `e2e-summary-<run_id>` | Nightly report with the lab, VictoriaLogs and GlitchTip origins replaced by `<lab>`, `<lab-obs>` and `<glitchtip>` | `E2E_SUMMARY_RETENTION_DAYS` days (default 7) |
 
 The lab copy travels over SSH with a key whose `authorized_keys` entry is
 `command="/home/deploy/bin/runners-git-receive",restrict`: it can only stream a tar into
 that directory, cannot open a shell and cannot read anything else. The receiver accepts
 only `receive <numeric run id>`, extracts with `--no-same-owner` and deletes bundles older
-than 30 days.
+than `ARTIFACTS_RETENTION_DAYS` days (default 7).
+
+Retention is configuration, not code:
+
+- GitHub copies: Actions variables `E2E_RAW_RETENTION_DAYS` and
+  `E2E_SUMMARY_RETENTION_DAYS` (**Settings -> Secrets and variables -> Actions ->
+  Variables**), integer days; both fall back to 7 when unset.
+- Lab copy: `ARTIFACTS_RETENTION_DAYS` in `/home/deploy/.config/runners-git/env` on the
+  lab (an SSH forced command gets no environment, so the receiver reads that file),
+  days, default 7.
+
+The receiver and the nightly launcher run on the lab from `/home/deploy/bin/` and are
+versioned here byte-for-byte under `lab/bin/`. Edit them here and redeploy:
+
+```bash
+scp -i ~/.ssh/<key> lab/bin/runners-git-receive lab/bin/runners-git-nightly deploy@<lab>:bin/
+ssh -i ~/.ssh/<key> deploy@<lab> 'chmod 700 ~/bin/runners-git-receive ~/bin/runners-git-nightly'
+```
+
+If the lab is ever hot-fixed directly, back-port the exact bytes into `lab/bin/` so the
+deploy diff stays real.
 
 Inspect a run on the lab:
 
